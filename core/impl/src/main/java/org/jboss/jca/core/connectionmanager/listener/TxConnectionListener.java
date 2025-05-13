@@ -1177,7 +1177,6 @@ public class TxConnectionListener extends AbstractConnectionListener
                         }
                      }
 
-                     getConnectionManager().returnManagedConnection(TxConnectionListener.this, true);
                   }
                   else
                   {
@@ -1185,6 +1184,8 @@ public class TxConnectionListener extends AbstractConnectionListener
                         log.tracef(new Exception("Connection across boundary"), "ConnectionListener=%s",
                                    TxConnectionListener.this);
                   }
+                  getConnectionManager().returnManagedConnection(TxConnectionListener.this, true);
+
                }
             }
          }
