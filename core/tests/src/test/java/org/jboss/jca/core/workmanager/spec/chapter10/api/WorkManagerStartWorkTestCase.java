@@ -25,12 +25,18 @@ import org.jboss.jca.arquillian.embedded.Inject;
 import org.jboss.jca.core.workmanager.spec.chapter10.common.LongRunningWork;
 import org.jboss.jca.core.workmanager.spec.chapter10.common.ShortRunningWork;
 import org.jboss.jca.core.workmanager.spec.chapter10.common.SimpleWork;
+import org.jboss.jca.core.workmanager.spec.chapter11.common.UnsupportedContext;
 import org.jboss.jca.embedded.dsl.InputStreamDescriptor;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
 import jakarta.resource.spi.work.ExecutionContext;
 import jakarta.resource.spi.work.Work;
+import jakarta.resource.spi.work.WorkCompletedException;
+import jakarta.resource.spi.work.WorkContext;
+import jakarta.resource.spi.work.WorkContextProvider;
 import jakarta.resource.spi.work.WorkException;
 import jakarta.resource.spi.work.WorkManager;
 import jakarta.resource.spi.work.WorkRejectedException;
@@ -273,14 +279,50 @@ public class WorkManagerStartWorkTestCase
    }
 
    /**
-    * startWork method: throws WorkRejectedException indicates that a Work instance has been 
+    * startWork method: throws WorkRejectedException indicates that a Work instance has been
     * rejected from further processing.
-    * @throws Throwable throwable exception 
+    * @throws Throwable throwable exception
     */
    @Test(expected = WorkRejectedException.class)
    public void testStartWorkFullSpecThrowWorkRejectedException() throws Throwable
    {
       ShortRunningWork work = new ShortRunningWork();
       rejectingWorkManager.scheduleWork(work);
+   }
+
+   /**
+    * startWork method: JBJCA-1538 regression test - ensures WorkCompletedException thrown during
+    * setup() (e.g., unsupported WorkContext) is propagated to caller instead of being swallowed.
+    * This verifies the same fix as scheduleWork for the race condition where work hasn't started yet.
+    * @throws Throwable throwable exception
+    */
+   @Test(expected = WorkCompletedException.class)
+   public void testStartWorkSetupFailureThrowsException() throws Throwable
+   {
+      Work work = new WorkWithUnsupportedContext();
+      workManager.startWork(work);
+   }
+
+   /**
+    * Test Work implementation that provides an unsupported WorkContext,
+    * triggering WorkCompletedException during setup() phase.
+    */
+   private static class WorkWithUnsupportedContext implements Work, WorkContextProvider
+   {
+      public void run()
+      {
+         // This should never execute if setup() fails
+      }
+
+      public void release()
+      {
+      }
+
+      public List<WorkContext> getWorkContexts()
+      {
+         List<WorkContext> contexts = new ArrayList<>();
+         contexts.add(new UnsupportedContext());
+         return contexts;
+      }
    }
 }

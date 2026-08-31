@@ -498,6 +498,7 @@ public class WorkManagerImpl implements WorkManager
             log.tracef("Exception %s for %s", exception, this);
 
             deltaDoWorkRejected();
+            deltaWorkFailed();
 
             throw exception;
          }
@@ -529,10 +530,14 @@ public class WorkManagerImpl implements WorkManager
 
       WorkException exception = null;
       WorkWrapper wrapper = null;
+      boolean submitted = false;
       try
       {
 
          doFirstChecks(work, startTimeout, execContext);
+
+         // JBJCA-1538: Wrap listener to update statistics via callback instead of in finally block
+         WorkListener internalListener = new StatisticsWorkListener(workListener);
 
          if (workListener != null)
          {
@@ -549,13 +554,15 @@ public class WorkManagerImpl implements WorkManager
 
          final CountDownLatch startedLatch = new CountDownLatch(1);
 
-         wrapper = createWorkWrapper(securityIntegration, work, execContext, workListener, startedLatch, null, creationTime, startTimeout);
+         wrapper = createWorkWrapper(securityIntegration, work, execContext, internalListener, startedLatch, null, creationTime, startTimeout);
 
-         setup(wrapper, workListener);
+         setup(wrapper, internalListener);
 
          Executor executor = getExecutor(work);
 
          executor.execute(wrapper);
+
+         submitted = true;
 
          try
          {
@@ -582,6 +589,8 @@ public class WorkManagerImpl implements WorkManager
       {
          if (exception != null)
          {
+            // Use original workListener for synchronous rejection (before submission).
+            // The wrapped listener is only for async callbacks from the worker thread.
             if (workListener != null)
             {
                WorkEvent event = new WorkEvent(this, WorkEvent.WORK_REJECTED, work, exception);
@@ -591,12 +600,26 @@ public class WorkManagerImpl implements WorkManager
             log.tracef("Exception %s for %s", exception, this);
 
             deltaStartWorkRejected();
+            deltaWorkFailed();
 
             throw exception;
          }
 
-         if (wrapper != null)
+         if (submitted)
+         {
+            // Work was successfully submitted and has started.
+            // Don't call checkWorkCompletionException here: startWork returns after the work
+            // starts but before it completes. The work may still be running, so reading
+            // wrapper.getWorkException() would be a race with the worker thread.
+            // Statistics are updated asynchronously via StatisticsWorkListener.workCompleted()
+            // when work actually completes in WorkWrapper.run()'s finally block.
+         }
+         else if (wrapper != null)
+         {
+            // Work never reached the executor (setup failure), so no worker thread exists.
+            // Safe to check wrapper state synchronously and throw the exception.
             checkWorkCompletionException(wrapper);
+         }
       }
 
       return WorkManager.UNKNOWN;
@@ -622,6 +645,7 @@ public class WorkManagerImpl implements WorkManager
 
       WorkException exception = null;
       WorkWrapper wrapper = null;
+      boolean submitted = false;
       try
       {
          doFirstChecks(work, startTimeout, execContext);
@@ -649,6 +673,8 @@ public class WorkManagerImpl implements WorkManager
          Executor executor = getExecutor(work);
 
          executor.execute(wrapper);
+
+         submitted = true;
       }
       catch (RejectedExecutionException ree)
       {
@@ -667,7 +693,8 @@ public class WorkManagerImpl implements WorkManager
       {
          if (exception != null)
          {
-            // Use original workListener for rejected callback, not wrapped one
+            // Use original workListener for synchronous rejection (before submission).
+            // The wrapped listener is only for async callbacks from the worker thread.
             if (workListener != null)
             {
                WorkEvent event = new WorkEvent(this, WorkEvent.WORK_REJECTED, work, exception);
@@ -677,12 +704,26 @@ public class WorkManagerImpl implements WorkManager
             log.tracef("Exception %s for %s", exception, this);
 
             deltaScheduleWorkRejected();
+            deltaWorkFailed();
 
             throw exception;
          }
 
-         // JBJCA-1538: Don't check completion here for async work
-         // Statistics are updated via StatisticsWorkListener.workCompleted() callback
+         if (submitted)
+         {
+            // Work was successfully submitted to the executor.
+            // Don't call checkWorkCompletionException here: it reads wrapper.getWorkException()
+            // which is a data race with the pool thread that may have already written to it,
+            // causing scheduleWork to throw (violating the async contract).
+            // Statistics are updated asynchronously via StatisticsWorkListener.workCompleted()
+            // when work actually completes in WorkWrapper.run()'s finally block.
+         }
+         else if (wrapper != null)
+         {
+            // Work never reached the executor (setup failure), so no worker thread exists.
+            // Safe to check wrapper state synchronously and throw the exception.
+            checkWorkCompletionException(wrapper);
+         }
       }
    }
 
@@ -1464,6 +1505,10 @@ public class WorkManagerImpl implements WorkManager
 
       public void workRejected(WorkEvent event)
       {
+         // WorkWrapper fires workRejected (not workCompleted) for runtime rejections
+         // like start timeout. Count these as failed work.
+         deltaWorkFailed();
+
          if (delegate != null)
             delegate.workRejected(event);
       }

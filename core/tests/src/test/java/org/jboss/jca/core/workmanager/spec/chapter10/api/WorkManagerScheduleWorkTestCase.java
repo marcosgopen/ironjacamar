@@ -25,13 +25,19 @@ import org.jboss.jca.arquillian.embedded.Inject;
 import org.jboss.jca.core.workmanager.spec.chapter10.common.LongRunningWork;
 import org.jboss.jca.core.workmanager.spec.chapter10.common.ShortRunningWork;
 import org.jboss.jca.core.workmanager.spec.chapter10.common.SimpleWork;
+import org.jboss.jca.core.workmanager.spec.chapter11.common.UnsupportedContext;
 import org.jboss.jca.embedded.dsl.InputStreamDescriptor;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import jakarta.resource.spi.work.ExecutionContext;
 import jakarta.resource.spi.work.Work;
+import jakarta.resource.spi.work.WorkCompletedException;
+import jakarta.resource.spi.work.WorkContext;
+import jakarta.resource.spi.work.WorkContextProvider;
 import jakarta.resource.spi.work.WorkException;
 import jakarta.resource.spi.work.WorkManager;
 import jakarta.resource.spi.work.WorkRejectedException;
@@ -273,14 +279,51 @@ public class WorkManagerScheduleWorkTestCase
    }
 
    /**
-    * scheduleWork method: throws WorkRejectedException indicates that a Work instance has been 
+    * scheduleWork method: throws WorkRejectedException indicates that a Work instance has been
     * rejected from further processing.
-    * @throws Throwable throwable exception 
+    * @throws Throwable throwable exception
     */
    @Test(expected = WorkRejectedException.class)
    public void testScheduleWorkFullSpecThrowWorkRejectedException() throws Throwable
    {
       ShortRunningWork work = new ShortRunningWork();
       rejectingWorkManager.scheduleWork(work, WorkManager.INDEFINITE, null, null);
+   }
+
+   /**
+    * scheduleWork method: JBJCA-1538 regression test - ensures WorkCompletedException thrown during
+    * setup() (e.g., unsupported WorkContext) is propagated to caller instead of being swallowed.
+    * This is critical for JMS XA recovery: when transaction context setup fails on reconnect,
+    * the resource adapter must be notified via exception so it can retry.
+    * @throws Throwable throwable exception
+    */
+   @Test(expected = WorkCompletedException.class)
+   public void testScheduleWorkSetupFailureThrowsException() throws Throwable
+   {
+      Work work = new WorkWithUnsupportedContext();
+      workManager.scheduleWork(work);
+   }
+
+   /**
+    * Test Work implementation that provides an unsupported WorkContext,
+    * triggering WorkCompletedException during setup() phase.
+    */
+   private static class WorkWithUnsupportedContext implements Work, WorkContextProvider
+   {
+      public void run()
+      {
+         // This should never execute if setup() fails
+      }
+
+      public void release()
+      {
+      }
+
+      public List<WorkContext> getWorkContexts()
+      {
+         List<WorkContext> contexts = new ArrayList<>();
+         contexts.add(new UnsupportedContext());
+         return contexts;
+      }
    }
 }
